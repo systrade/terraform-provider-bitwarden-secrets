@@ -24,6 +24,7 @@ func NewProjectsDataSource() datasource.DataSource {
 // projectsDataSource defines the data source implementation.
 type projectsDataSource struct {
 	bitwardenClient sdk.BitwardenClientInterface
+	requestGate     requestGate
 	organizationId  string
 }
 
@@ -123,6 +124,7 @@ func (d *projectsDataSource) Configure(ctx context.Context, req datasource.Confi
 	}
 
 	d.bitwardenClient = client
+	d.requestGate = providerDataStruct.requestGate
 	d.organizationId = organizationId
 
 	tflog.Info(ctx, "Datasource Configured")
@@ -141,7 +143,12 @@ func (d *projectsDataSource) Read(ctx context.Context, _ datasource.ReadRequest,
 		return
 	}
 
-	projects, err := d.bitwardenClient.Projects().List(d.organizationId)
+	var projects *sdk.ProjectsResponse
+	err := d.requestGate.Do(ctx, func() error {
+		var err error
+		projects, err = d.bitwardenClient.Projects().List(d.organizationId)
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to List Projects",

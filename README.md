@@ -136,3 +136,39 @@ Thereafter, the [`GNUmakefile`](./GNUmakefile) contains a specific command to ru
 ```shell
 make testacc_tofu
 ```
+
+### SDK request serialization
+
+SDK network operations share one capacity-one gate per configured provider instance,
+including access-token login, secret CRUD, secret reads/listing, and project listing.
+Only the SDK call holds the gate; password generation and Terraform state and
+diagnostics remain outside it. Other providers can still run concurrently.
+
+This is an initial mitigation for concurrent-request 429 errors, not a rate-limit
+guarantee. Sequential requests can still exceed a requests-per-second quota, and
+separate provider configurations, processes, and CI runs are not coordinated.
+Cancellation stops waiting for the gate and is checked again before invoking the
+SDK. It cannot interrupt a native SDK call that has already started.
+
+The implementation is based on upstream `v1.0.1`
+(`f1f791ee0bf63d6a27f16c00f00bc718973026cc`), with the unchanged
+`github.com/bitwarden/sdk-go/v2 v2.1.0` dependency. That SDK delegates operations
+through its native command runner, exposes API failures as plain error strings,
+and provides neither an injectable Go HTTP client nor structured status or
+`Retry-After` metadata through these interfaces.
+
+There are no retries or delays. If 429s persist, the next increment is bounded
+429 retries with a shared cooldown inside the same gate; structured status/header
+support may require SDK work.
+
+Run the offline serialization tests (including race detection) with:
+
+```shell
+go test -race ./... -run '^TestRequestGate' -timeout=60s
+```
+
+Do not use the full acceptance suite for an offline check: its setup creates live
+resources. Build locally as described above and point a development override at
+the resulting binary directory. In an isolated scratch Terraform directory, use
+that override to run `terraform providers schema -json` to check plugin startup
+without authenticating or creating secrets. Adoption in infrastructure is separate.

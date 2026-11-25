@@ -46,6 +46,7 @@ func (p *BitwardenSecretsManagerProvider) Metadata(_ context.Context, _ provider
 
 type BitwardenSecretsManagerProviderDataStruct struct {
 	bitwardenClient sdk.BitwardenClientInterface
+	requestGate     requestGate
 	organizationId  string
 }
 
@@ -248,7 +249,10 @@ func (p *BitwardenSecretsManagerProvider) Configure(ctx context.Context, req pro
 
 	tflog.Debug(ctx, "Bitwarden Secrets Manager Client created")
 
-	err = bitwardenClient.AccessTokenLogin(accessToken, &statePath)
+	gate := make(requestGate, 1)
+	err = gate.Do(ctx, func() error {
+		return bitwardenClient.AccessTokenLogin(accessToken, &statePath)
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Authenticate Bitwarden Secrets Manager Client",
@@ -264,8 +268,9 @@ func (p *BitwardenSecretsManagerProvider) Configure(ctx context.Context, req pro
 	// Make the bitwardenClient available during DataSource and Resource
 	// type Configure methods.
 	providerDataStruct := BitwardenSecretsManagerProviderDataStruct{
-		bitwardenClient,
-		organizationId,
+		bitwardenClient: bitwardenClient,
+		requestGate:     gate,
+		organizationId:  organizationId,
 	}
 
 	resp.DataSourceData = providerDataStruct

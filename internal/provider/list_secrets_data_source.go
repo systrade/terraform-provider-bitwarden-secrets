@@ -24,6 +24,7 @@ func NewListSecretsDataSource() datasource.DataSource {
 // listSecretsDataSource defines the data source implementation.
 type listSecretsDataSource struct {
 	bitwardenClient sdk.BitwardenClientInterface
+	requestGate     requestGate
 	organizationId  string
 }
 
@@ -106,6 +107,7 @@ func (l *listSecretsDataSource) Configure(ctx context.Context, req datasource.Co
 	}
 
 	l.bitwardenClient = client
+	l.requestGate = providerDataStruct.requestGate
 	l.organizationId = organizationId
 
 	tflog.Info(ctx, "Datasource Configured")
@@ -124,7 +126,12 @@ func (l *listSecretsDataSource) Read(ctx context.Context, _ datasource.ReadReque
 		return
 	}
 
-	secrets, err := l.bitwardenClient.Secrets().List(l.organizationId)
+	var secrets *sdk.SecretIdentifiersResponse
+	err := l.requestGate.Do(ctx, func() error {
+		var err error
+		secrets, err = l.bitwardenClient.Secrets().List(l.organizationId)
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to List Secrets",

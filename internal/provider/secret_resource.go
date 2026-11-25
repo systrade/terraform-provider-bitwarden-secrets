@@ -33,6 +33,7 @@ func NewSecretResource() resource.Resource {
 // secretResource defines the data source implementation.
 type secretResource struct {
 	bitwardenClient sdk.BitwardenClientInterface
+	requestGate     requestGate
 	organizationId  string
 }
 
@@ -249,6 +250,7 @@ func (s *secretResource) Configure(ctx context.Context, req resource.ConfigureRe
 	}
 
 	s.bitwardenClient = client
+	s.requestGate = providerDataStruct.requestGate
 	s.organizationId = organizationId
 
 	tflog.Info(ctx, "Resource Configured")
@@ -286,13 +288,18 @@ func (s *secretResource) Create(ctx context.Context, req resource.CreateRequest,
 		value = plan.Value.ValueString()
 	}
 
-	secret, err := s.bitwardenClient.Secrets().Create(
-		plan.Key.ValueString(),
-		value,
-		plan.Note.ValueString(),
-		s.organizationId,
-		[]string{plan.ProjectID.ValueString()},
-	)
+	var secret *sdk.SecretResponse
+	err := s.requestGate.Do(ctx, func() error {
+		var err error
+		secret, err = s.bitwardenClient.Secrets().Create(
+			plan.Key.ValueString(),
+			value,
+			plan.Note.ValueString(),
+			s.organizationId,
+			[]string{plan.ProjectID.ValueString()},
+		)
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Create Secret",
@@ -347,7 +354,12 @@ func (s *secretResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	secret, err := s.bitwardenClient.Secrets().Get(state.ID.ValueString())
+	var secret *sdk.SecretResponse
+	err := s.requestGate.Do(ctx, func() error {
+		var err error
+		secret, err = s.bitwardenClient.Secrets().Get(state.ID.ValueString())
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Read Secret with id: "+state.ID.ValueString(),
@@ -425,14 +437,19 @@ func (s *secretResource) Update(ctx context.Context, req resource.UpdateRequest,
 		projectID = state.ProjectID.ValueString()
 	}
 
-	secret, err := s.bitwardenClient.Secrets().Update(
-		state.ID.ValueString(),
-		key,
-		value,
-		note,
-		state.OrganizationID.ValueString(),
-		[]string{projectID},
-	)
+	var secret *sdk.SecretResponse
+	err := s.requestGate.Do(ctx, func() error {
+		var err error
+		secret, err = s.bitwardenClient.Secrets().Update(
+			state.ID.ValueString(),
+			key,
+			value,
+			note,
+			state.OrganizationID.ValueString(),
+			[]string{projectID},
+		)
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Update Secret",
@@ -483,7 +500,12 @@ func (s *secretResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	secretDeleteResponse, err := s.bitwardenClient.Secrets().Delete([]string{plan.ID.ValueString()})
+	var secretDeleteResponse *sdk.SecretsDeleteResponse
+	err := s.requestGate.Do(ctx, func() error {
+		var err error
+		secretDeleteResponse, err = s.bitwardenClient.Secrets().Delete([]string{plan.ID.ValueString()})
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Delete Secret",

@@ -27,6 +27,7 @@ func NewSecretDataSource() datasource.DataSource {
 // secretDataSource defines the data source implementation.
 type secretDataSource struct {
 	bitwardenClient sdk.BitwardenClientInterface
+	requestGate     requestGate
 	organizationId  string
 }
 
@@ -135,6 +136,7 @@ func (s *secretDataSource) Configure(ctx context.Context, req datasource.Configu
 	}
 
 	s.bitwardenClient = client
+	s.requestGate = providerDataStruct.requestGate
 	s.organizationId = organizationId
 
 	tflog.Info(ctx, "Datasource Configured")
@@ -158,7 +160,12 @@ func (s *secretDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 
-	secret, err := s.bitwardenClient.Secrets().Get(state.ID.ValueString())
+	var secret *sdk.SecretResponse
+	err := s.requestGate.Do(ctx, func() error {
+		var err error
+		secret, err = s.bitwardenClient.Secrets().Get(state.ID.ValueString())
+		return err
+	})
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Unable to Read Secret with id: "+state.ID.ValueString(),
