@@ -86,7 +86,8 @@ jobs:
       - name: Get current version
         id: current-version
         run: |
-          CURRENT_VERSION=$(grep 'ProviderVersion =' version/version.go | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+(-pre)?)".*/\1/')
+          CURRENT_VERSION=$(sed -nE 's/^[[:space:]]*ProviderVersion = "([^"]+)"[[:space:]]*$/\1/p' version/version.go)
+          test -n "$CURRENT_VERSION"
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build binary
