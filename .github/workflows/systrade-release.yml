@@ -1,0 +1,215 @@
+name: Systrade Release
+
+on:
+  push:
+    branches:
+      - systrade/local-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: systrade-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    if: github.repository == 'systrade/terraform-provider-bitwarden-secrets' && github.ref == 'refs/heads/systrade/local-build'
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate version and check for an existing release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(sed -nE 's/^[[:space:]]*ProviderVersion = "([^"]+)"[[:space:]]*$/\1/p' version/version.go)
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-systrade\.[1-9][0-9]*$ ]]; then
+            echo "::error::ProviderVersion must have the form X.Y.Z-systrade.N (N >= 1)."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TAG="v$VERSION"
+          EXISTING_TAG=$(git ls-remote --tags origin "refs/tags/$TAG")
+          if [[ -n "$EXISTING_TAG" ]]; then
+            IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
+            if [[ "$IS_DRAFT" != "false" ]]; then
+              echo "::error::$TAG has an unfinished draft release. Resolve it or bump ProviderVersion."
+              exit 1
+            fi
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already published. Bump ProviderVersion to release another build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux_amd64
+            dependencies: musl-tools
+            build_target: build-linux-amd64
+            verify_target: verify-binary-linux
+            extension: ''
+          - target: windows_amd64
+            dependencies: mingw-w64
+            build_target: build-windows-amd64
+            verify_target: verify-binary-windows-amd64
+            extension: .exe
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install build dependencies
+        env:
+          DEPENDENCIES: ${{ matrix.dependencies }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes "$DEPENDENCIES"
+
+      - name: Run offline serialization tests
+        if: matrix.target == 'linux_amd64'
+        run: go test -race ./... -run '^TestRequestGate' -timeout=60s
+
+      - name: Build and verify binary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_TARGET: ${{ matrix.build_target }}
+          VERIFY_TARGET: ${{ matrix.verify_target }}
+        run: |
+          make "$BUILD_TARGET" BINARY_VERSION="_v$VERSION"
+          make "$VERIFY_TARGET" BINARY_VERSION="_v$VERSION"
+
+      - name: Package binary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          zip "terraform-provider-bitwarden-secrets_${VERSION}_${TARGET}.zip" \
+            "terraform-provider-bitwarden-secrets_v${VERSION}${EXTENSION}" LICENSE.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: systrade-${{ matrix.target }}
+          path: terraform-provider-bitwarden-secrets_${{ needs.prepare.outputs.version }}_${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  smoke-test:
+    needs: [prepare, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux_amd64
+            runner: ubuntu-22.04
+          - target: windows_amd64
+            runner: windows-2022
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: systrade-${{ matrix.target }}
+          path: mirror/registry.terraform.io/bitwarden/bitwarden-secrets
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false
+
+      - name: Install package and load provider schema
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          WORKSPACE=$(pwd)
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            WORKSPACE=$(cygpath -m "$WORKSPACE")
+          fi
+          mkdir smoke
+          cat > smoke/main.tf <<EOF
+          terraform {
+            required_providers {
+              bitwarden-secrets = {
+                source  = "bitwarden/bitwarden-secrets"
+                version = "= $VERSION"
+              }
+            }
+          }
+          EOF
+          cat > smoke.tfrc <<EOF
+          provider_installation {
+            filesystem_mirror {
+              path = "$WORKSPACE/mirror"
+            }
+          }
+          EOF
+          export TF_CLI_CONFIG_FILE="$WORKSPACE/smoke.tfrc"
+          terraform -chdir=smoke init -backend=false -input=false
+          terraform -chdir=smoke providers schema -json > schema.json
+          jq -e '.provider_schemas["registry.terraform.io/bitwarden/bitwarden-secrets"].resource_schemas["bitwarden-secrets_secret"] != null' schema.json
+
+  release:
+    needs: [prepare, smoke-test]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: systrade-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums and publish prerelease
+        working-directory: artifacts
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          PREFIX="terraform-provider-bitwarden-secrets_$VERSION"
+          PACKAGES=("${PREFIX}_linux_amd64.zip" "${PREFIX}_windows_amd64.zip")
+          sha256sum "${PACKAGES[@]}" > "${PREFIX}_SHA256SUMS"
+          sha256sum --check "${PREFIX}_SHA256SUMS"
+          TAG="v$VERSION"
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" --silent
+          gh release create "$TAG" "${PACKAGES[@]}" "${PREFIX}_SHA256SUMS" \
+            --verify-tag --draft --prerelease --latest=false \
+            --title "$TAG" \
+            --notes "Systrade internal build from commit $GITHUB_SHA. Includes Linux AMD64 and Windows AMD64 packages. Install through a Terraform filesystem mirror using bitwarden/bitwarden-secrets with version = \"= $VERSION\". Checksums are Systrade-generated, not signed by Bitwarden."
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          echo "Published $TAG from $GITHUB_SHA with Linux AMD64 and Windows AMD64 packages." >> "$GITHUB_STEP_SUMMARY"

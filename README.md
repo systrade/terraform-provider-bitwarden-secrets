@@ -218,3 +218,50 @@ use an exact constraint: `version = "= 1.0.2-systrade.1"`.
 The inherited release workflow still uses Bitwarden's signing credentials and
 artifacts from `main`; it is not a Systrade publishing setup. Local testing does
 not require running it or publishing a release.
+
+### Publishing Systrade prereleases
+
+The separate [Systrade Release workflow](.github/workflows/systrade-release.yml)
+runs on pushes to `systrade/local-build` in
+`systrade/terraform-provider-bitwarden-secrets`. It can also be dispatched manually
+with that branch selected. It does not run in the upstream repository or on other
+branches, and does not change the upstream build/release workflows.
+
+To publish:
+
+1. Set `ProviderVersion` in [`version/version.go`](version/version.go) to a new
+   version of the form `X.Y.Z-systrade.N`, for example `1.0.2-systrade.1`.
+2. Commit and push to `systrade/local-build`.
+3. Wait for **Systrade Release** to finish, then download the assets from the
+   fork's GitHub release tagged `v1.0.2-systrade.1`.
+
+The workflow builds Linux AMD64 and Windows AMD64 ZIPs from the triggering
+commit, runs the offline serialization tests with race detection, and verifies
+installation and provider schema loading on both operating systems with
+Terraform 1.5.7. These checks do not authenticate to Bitwarden or create resources.
+Both ZIPs include the provider binary and license. A SHA-256 checksum file is
+published alongside them; these are not Bitwarden-signed registry releases.
+Only the publishing job receives write access through the automatic
+`GITHUB_TOKEN`; no Bitwarden Azure or signing secrets are required.
+
+An already-published version is skipped: bump the version for every new release,
+and never replace published assets. An existing tag without a published release
+fails rather than being reused. If publication fails after creating a draft,
+inspect the draft/tag before manually cleaning up and retrying, or use a new
+version. The workflow uploads all assets to a draft before making it public.
+The fork is public, so these releases and their assets are also public.
+
+For `1.0.2-systrade.1`, the release assets are:
+
+```text
+terraform-provider-bitwarden-secrets_1.0.2-systrade.1_linux_amd64.zip
+terraform-provider-bitwarden-secrets_1.0.2-systrade.1_windows_amd64.zip
+terraform-provider-bitwarden-secrets_1.0.2-systrade.1_SHA256SUMS
+```
+
+A GitHub release is not a Terraform registry. Verify the downloaded ZIP against
+the checksum file, then place it under
+`<mirror>/registry.terraform.io/bitwarden/bitwarden-secrets/` and configure
+Terraform's `filesystem_mirror` to use that mirror root. Keep the source address
+`bitwarden/bitwarden-secrets` and pin `version = "= 1.0.2-systrade.1"`.
+This release workflow does not configure consuming projects or their CI runners.
