@@ -172,3 +172,49 @@ resources. Build locally as described above and point a development override at
 the resulting binary directory. In an isolated scratch Terraform directory, use
 that override to run `terraform providers schema -json` to check plugin startup
 without authenticating or creating secrets. Adoption in infrastructure is separate.
+
+### Testing the Systrade build alongside the official provider
+
+The `systrade/local-build` branch identifies this build as `1.0.2-systrade.1`.
+Its version and these instructions are separate from the serialization commit,
+so they can be omitted from an upstream contribution. The provider source address
+remains `bitwarden/bitwarden-secrets`.
+
+Build from this branch into a dedicated directory (Go and a C compiler required):
+
+```sh
+GOTOOLCHAIN=go1.26.4 go build \
+  -o /tmp/bitwarden-systrade/bin/terraform-provider-bitwarden-secrets .
+cat > /tmp/bitwarden-systrade/terraform.tfrc <<'CONFIG'
+provider_installation {
+  dev_overrides {
+    "registry.terraform.io/bitwarden/bitwarden-secrets" = "/tmp/bitwarden-systrade/bin"
+  }
+  direct {}
+}
+CONFIG
+```
+
+Select that override for individual commands in a separate test configuration:
+
+```sh
+TF_CLI_CONFIG_FILE=/tmp/bitwarden-systrade/terraform.tfrc \
+  terraform providers schema -json
+```
+
+The test configuration must declare `bitwarden/bitwarden-secrets` in
+`required_providers`. Schema inspection does not authenticate or create secrets.
+Commands without this CLI configuration continue using their normal provider
+installation settings. Avoid a global override or exporting `TF_CLI_CONFIG_FILE`
+when comparing builds. Use separate test state and resources for any later live tests.
+
+A development override selects the local binary regardless of the configured
+version constraint or locked provider checksum; `terraform init` still performs
+normal version selection. Changing `ProviderVersion` alone does not install the
+fork, and provider aliases cannot select two versions of the same source in one
+configuration. For a future registry or mirror installation of this prerelease,
+use an exact constraint: `version = "= 1.0.2-systrade.1"`.
+
+The inherited release workflow still uses Bitwarden's signing credentials and
+artifacts from `main`; it is not a Systrade publishing setup. Local testing does
+not require running it or publishing a release.
