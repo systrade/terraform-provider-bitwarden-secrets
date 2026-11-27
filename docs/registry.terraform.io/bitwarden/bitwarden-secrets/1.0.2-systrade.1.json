@@ -1,0 +1,16 @@
+{
+  "archives": {
+    "linux_amd64": {
+      "url": "https://github.com/systrade/terraform-provider-bitwarden-secrets/releases/download/v1.0.2-systrade.1/terraform-provider-bitwarden-secrets_1.0.2-systrade.1_linux_amd64.zip",
+      "hashes": [
+        "zh:c6f817942aec3393089041261d346eb4044ff1a39f0a802f8375817b64306c59"
+      ]
+    },
+    "windows_amd64": {
+      "url": "https://github.com/systrade/terraform-provider-bitwarden-secrets/releases/download/v1.0.2-systrade.1/terraform-provider-bitwarden-secrets_1.0.2-systrade.1_windows_amd64.zip",
+      "hashes": [
+        "zh:155fe9a117a6c120fdf0ea1f782ebb96a1f084dc1382b1056da1da5430048baa"
+      ]
+    }
+  }
+}
